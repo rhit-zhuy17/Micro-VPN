@@ -1,8 +1,90 @@
 import socket
 import json
 import sys
+import logging
 from crypto_utils import encrypt, decrypt
 from shared_config import HOST, PORT
+from tunnel import ClientTunnel
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+class VPNClient:
+    def __init__(self):
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.authenticated = False
+        self.username = None
+        self.tunnel = None
+
+    def connect(self):
+        try:
+            self.socket.connect((HOST, PORT))
+            logging.info("[+] Connected to server")
+            return True
+        except Exception as e:
+            logging.error(f"[-] Connection failed: {e}")
+            return False
+
+    def authenticate(self, username, password):
+        auth_request = {
+            "type": "auth",
+            "username": username,
+            "password": password
+        }
+        self.socket.send(encrypt(json.dumps(auth_request).encode()))
+        response = json.loads(decrypt(self.socket.recv(4096)).decode())
+        
+        if response["status"] == "success":
+            self.authenticated = True
+            self.username = username
+            logging.info("[+] Authentication successful")
+            
+            # Initialize tunnel
+            self.tunnel = ClientTunnel(1080, HOST, PORT)  # SOCKS proxy port
+            self.tunnel.connect_vpn(self.socket)
+            logging.info("[+] VPN tunnel established on port 1080")
+            return True
+        else:
+            logging.error(f"[-] Authentication failed: {response['message']}")
+            return False
+
+    def send_message(self, message):
+        if not self.authenticated:
+            logging.error("[-] Not authenticated")
+            return False
+
+        request = {
+            "type": "message",
+            "content": message
+        }
+        self.socket.send(encrypt(json.dumps(request).encode()))
+        response = json.loads(decrypt(self.socket.recv(4096)).decode())
+        logging.info(f"[Server] {response['message']}")
+        return True
+
+    def get_status(self):
+        if not self.authenticated:
+            logging.error("[-] Not authenticated")
+            return False
+
+        request = {"type": "status"}
+        self.socket.send(encrypt(json.dumps(request).encode()))
+        response = json.loads(decrypt(self.socket.recv(4096)).decode())
+        
+        if response["status"] == "success":
+            logging.info(f"\n[*] Connected users: {response['connected_users']}")
+            logging.info("[*] User list:")
+            for user in response['user_list']:
+                logging.info(f"    - {user['username']} (connected since {user['start_time']})")
+        return True
+
+    def close(self):
+        if self.tunnel:
+            self.tunnel.stop()
+        self.socket.close()
 
 def print_help():
     print("\nAvailable commands:")
@@ -17,108 +99,47 @@ def main():
     print("🔒 VPN Client")
     print("Type 'help' for available commands")
     
-    client_socket = None
-    authenticated = False
-    username = None
+    client = VPNClient()
+    if not client.connect():
+        return
+
+    # Authentication
+    username = input("Username: ")
+    password = input("Password: ")
+    
+    if not client.authenticate(username, password):
+        client.close()
+        return
+
+    print("\n[*] Available commands:")
+    print("    - message <text>: Send a message")
+    print("    - status: Show connected users")
+    print("    - quit: Exit the program")
+    print("\n[*] VPN tunnel is running on port 1080")
+    print("    Configure your applications to use SOCKS proxy at 127.0.0.1:1080")
 
     while True:
         try:
             command = input("\n> ").strip()
             
             if command == "quit":
-                if client_socket:
-                    client_socket.close()
-                print("Goodbye!")
                 break
-                
-            elif command == "help":
-                print_help()
-                
-            elif command.startswith("connect "):
-                if client_socket:
-                    print("Already connected. Please disconnect first.")
-                    continue
-                    
-                try:
-                    _, username, password = command.split()
-                except ValueError:
-                    print("Usage: connect <username> <password>")
-                    continue
-                
-                try:
-                    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    client_socket.connect((HOST, PORT))
-                    print("[+] Connected to server")
-                    
-                    # Send authentication request
-                    auth_request = {
-                        "type": "auth",
-                        "username": username,
-                        "password": password
-                    }
-                    client_socket.send(encrypt(json.dumps(auth_request).encode()))
-                    
-                    # Get response
-                    response = json.loads(decrypt(client_socket.recv(4096)).decode())
-                    if response["status"] == "success":
-                        authenticated = True
-                        print("[+] Authentication successful")
-                    else:
-                        print(f"[-] Authentication failed: {response['message']}")
-                        client_socket.close()
-                        client_socket = None
-                        
-                except Exception as e:
-                    print(f"[-] Connection failed: {e}")
-                    if client_socket:
-                        client_socket.close()
-                        client_socket = None
-                
             elif command == "status":
-                if not client_socket or not authenticated:
-                    print("[-] Not connected. Use 'connect' first.")
-                    continue
-                    
-                request = {"type": "status"}
-                client_socket.send(encrypt(json.dumps(request).encode()))
-                response = json.loads(decrypt(client_socket.recv(4096)).decode())
-                
-                if response["status"] == "success":
-                    print(f"\n[*] Connected users: {response['connected_users']}")
-                    print("[*] User list:")
-                    for user in response['user_list']:
-                        print(f"    - {user['username']} (connected since {user['start_time']})")
-                else:
-                    print(f"[-] Error: {response['message']}")
-                    
+                client.get_status()
             elif command.startswith("message "):
-                if not client_socket or not authenticated:
-                    print("[-] Not connected. Use 'connect' first.")
-                    continue
-                    
                 message = command[8:]
-                request = {
-                    "type": "message",
-                    "content": message
-                }
-                client_socket.send(encrypt(json.dumps(request).encode()))
-                response = json.loads(decrypt(client_socket.recv(4096)).decode())
-                print(f"[Server] {response['message']}")
-                
+                client.send_message(message)
             else:
                 print("Unknown command. Type 'help' for available commands.")
-                
+
         except KeyboardInterrupt:
-            print("\nGoodbye!")
-            if client_socket:
-                client_socket.close()
             break
         except Exception as e:
-            print(f"[-] Error: {e}")
-            if client_socket:
-                client_socket.close()
-                client_socket = None
-                authenticated = False
+            logging.error(f"[-] Error: {e}")
+            break
+
+    client.close()
+    print("[*] Disconnected from server")
 
 if __name__ == "__main__":
     main()
