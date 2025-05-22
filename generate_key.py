@@ -1,28 +1,13 @@
 import os
-import base64
-from cryptography.fernet import Fernet
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+import string
+import re
 
 def generate_key():
-    """Generate a secure encryption key"""
-    # Generate a random salt
-    salt = os.urandom(16)
-    
-    # Generate a random password
-    password = os.urandom(32)
-    
-    # Use PBKDF2 to derive a key
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=salt,
-        iterations=100000,
-    )
-    
-    # Generate the key
-    key = base64.urlsafe_b64encode(kdf.derive(password))
-    
+    """Generate a secure 32-byte key for AES encryption"""
+    # Use a mix of letters, numbers, and special characters
+    chars = string.ascii_letters + string.digits + '+/'
+    # Generate 32 random characters
+    key = ''.join(os.urandom(32).hex()[:32])
     return key
 
 def main():
@@ -32,7 +17,7 @@ def main():
     # Print the key in a format ready to use in shared_config.py
     print("\nGenerated Encryption Key:")
     print("-" * 50)
-    print(f"ENCRYPTION_KEY = {key}")
+    print(f"ENCRYPTION_KEY = b'{key}'")
     print("-" * 50)
     
     # Update shared_config.py
@@ -40,14 +25,14 @@ def main():
         with open('shared_config.py', 'r') as f:
             content = f.read()
         
-        # Replace the existing key
-        if 'ENCRYPTION_KEY' in content:
-            new_content = content.replace(
-                "ENCRYPTION_KEY = b'your-32-byte-encryption-key-here!!'",
-                f"ENCRYPTION_KEY = {key}"
-            )
+        # Use regex to find and replace the ENCRYPTION_KEY line
+        pattern = r"ENCRYPTION_KEY\s*=\s*b'[^']*'"
+        new_key_line = f"ENCRYPTION_KEY = b'{key}'"
+        
+        if re.search(pattern, content):
+            new_content = re.sub(pattern, new_key_line, content)
         else:
-            new_content = content + f"\nENCRYPTION_KEY = {key}"
+            new_content = content + f"\n{new_key_line}"
         
         with open('shared_config.py', 'w') as f:
             f.write(new_content)

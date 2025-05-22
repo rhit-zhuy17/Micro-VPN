@@ -5,6 +5,9 @@ import select
 import logging
 from typing import Optional, Tuple
 import json
+import os
+import sys
+import subprocess
 
 class Tunnel:
     def __init__(self, local_port: int, remote_host: str, remote_port: int):
@@ -20,9 +23,9 @@ class Tunnel:
         self.running = True
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server.bind(('127.0.0.1', self.local_port))
+        self.server.bind(('0.0.0.0', self.local_port))  # Listen on all interfaces
         self.server.listen(5)
-        logging.info(f"Tunnel listening on 127.0.0.1:{self.local_port}")
+        logging.info(f"Tunnel listening on 0.0.0.0:{self.local_port}")
 
         while self.running:
             try:
@@ -105,6 +108,47 @@ class ClientTunnel(Tunnel):
         """Connect to VPN server"""
         self.vpn_socket = vpn_socket
         self.start()
+        
+        # Set up system routing
+        if sys.platform == 'win32':
+            self.setup_windows_routing()
+        else:
+            self.setup_unix_routing()
+
+    def setup_windows_routing(self):
+        """Set up routing on Windows"""
+        try:
+            # Get current default gateway
+            result = subprocess.run(['ipconfig'], capture_output=True, text=True)
+            output = result.stdout
+            
+            # Save current default gateway
+            self.original_gateway = "137.112.208.1"  # From your ipconfig output
+            
+            # Add route for VPN server through original gateway
+            os.system(f'route add {self.remote_host} mask 255.255.255.255 {self.original_gateway}')
+            
+            # Add route for local network through original gateway
+            os.system('route add 137.112.208.0 mask 255.255.252.0 137.112.208.1')
+            
+            # Add default route through VPN
+            os.system('route delete 0.0.0.0')
+            os.system('route add 0.0.0.0 mask 0.0.0.0 127.0.0.1 metric 1')
+            
+            logging.info("Windows routing configured")
+        except Exception as e:
+            logging.error(f"Error setting up Windows routing: {e}")
+
+    def setup_unix_routing(self):
+        """Set up routing on Unix-like systems"""
+        try:
+            # Add route for VPN server
+            os.system(f'sudo route add {self.remote_host} 127.0.0.1')
+            # Add default route through VPN
+            os.system('sudo route add default 127.0.0.1')
+            logging.info("Unix routing configured")
+        except Exception as e:
+            logging.error(f"Error setting up Unix routing: {e}")
 
     def handle_client(self, client_socket: socket.socket):
         """Handle a new client connection by forwarding through VPN"""
@@ -138,6 +182,38 @@ class ClientTunnel(Tunnel):
         except Exception as e:
             logging.error(f"Error handling client: {e}")
             self.cleanup_socket(client_socket)
+
+    def stop(self):
+        """Stop the tunnel and restore routing"""
+        super().stop()
+        if sys.platform == 'win32':
+            self.restore_windows_routing()
+        else:
+            self.restore_unix_routing()
+
+    def restore_windows_routing(self):
+        """Restore Windows routing"""
+        try:
+            # Remove VPN routes
+            os.system('route delete 0.0.0.0')
+            os.system(f'route delete {self.remote_host}')
+            os.system('route delete 137.112.208.0')
+            
+            # Restore default route
+            os.system(f'route add 0.0.0.0 mask 0.0.0.0 {self.original_gateway}')
+            
+            logging.info("Windows routing restored")
+        except Exception as e:
+            logging.error(f"Error restoring Windows routing: {e}")
+
+    def restore_unix_routing(self):
+        """Restore Unix routing"""
+        try:
+            os.system('sudo route del default')
+            os.system(f'sudo route del {self.remote_host}')
+            logging.info("Unix routing restored")
+        except Exception as e:
+            logging.error(f"Error restoring Unix routing: {e}")
 
 class ServerTunnel(Tunnel):
     def __init__(self, local_port: int):

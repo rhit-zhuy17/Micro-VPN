@@ -169,13 +169,30 @@ def handle_client(conn, addr, user_manager):
 
 def start_server(user_manager):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind((HOST, PORT))
-    s.listen(5)
-    logging.info(f"[+] VPN Server running on {HOST}:{PORT}")
-    
-    while True:
-        conn, addr = s.accept()
-        threading.Thread(target=handle_client, args=(conn, addr, user_manager)).start()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.bind((HOST, PORT))
+        s.listen(5)
+        logging.info(f"[+] VPN Server running on {HOST}:{PORT}")
+        
+        while True:
+            try:
+                conn, addr = s.accept()
+                threading.Thread(target=handle_client, args=(conn, addr, user_manager)).start()
+            except Exception as e:
+                logging.error(f"[-] Error accepting connection: {e}")
+                continue
+    except OSError as e:
+        if e.errno == 48:  # Address already in use
+            logging.error(f"[-] Port {PORT} is already in use. Please wait a moment and try again.")
+            time.sleep(5)  # Wait for the port to be released
+            return
+        else:
+            logging.error(f"[-] Server error: {e}")
+    except Exception as e:
+        logging.error(f"[-] Server error: {e}")
+    finally:
+        s.close()
 
 def main():
     st.set_page_config(
