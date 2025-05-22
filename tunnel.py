@@ -244,6 +244,8 @@ class ClientTunnel(Tunnel):
         
         logging.info("SOCKS proxy started on 127.0.0.1:1080")
         
+        # Use a different port for the tunnel
+        self.local_port = 1081  # Use a different port than the SOCKS proxy
         # Start tunnel
         self.start()
         
