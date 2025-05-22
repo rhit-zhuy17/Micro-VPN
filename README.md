@@ -70,6 +70,7 @@ This will:
    - Store it securely in `shared_config.py`
    - Consider using environment variables for production deployments
    - Regularly rotate keys for enhanced security
+   - Please don't push `shared_config.py` after modifying ip and key in the file
 
 ## Usage
 
