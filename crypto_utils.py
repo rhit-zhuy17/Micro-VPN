@@ -1,8 +1,10 @@
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
 import os
+from shared_config import ENCRYPTION_KEY
 
-KEY = b"ThisIsA16ByteKey"  # 16-byte AES key
+# Use the key from shared_config.py
+KEY = ENCRYPTION_KEY
 
 def encrypt(data: bytes) -> bytes:
     cipher = AES.new(KEY, AES.MODE_CBC)
