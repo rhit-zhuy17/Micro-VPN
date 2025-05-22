@@ -274,7 +274,7 @@ def main():
     
     # Auto-refresh
     time.sleep(1)
-    st.experimental_rerun()
+    st.rerun()
 
 if __name__ == "__main__":
     main() 
