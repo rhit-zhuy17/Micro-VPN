@@ -1,5 +1,5 @@
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad, unpad
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives import padding
 import os
 from shared_config import ENCRYPTION_KEY
 
@@ -7,12 +7,19 @@ from shared_config import ENCRYPTION_KEY
 KEY = ENCRYPTION_KEY
 
 def encrypt(data: bytes) -> bytes:
-    cipher = AES.new(KEY, AES.MODE_CBC)
-    ct_bytes = cipher.encrypt(pad(data, AES.block_size))
-    return cipher.iv + ct_bytes  # prepend IV
+    iv = os.urandom(16)
+    padder = padding.PKCS7(128).padder()
+    padded_data = padder.update(data) + padder.finalize()
+    cipher = Cipher(algorithms.AES(KEY), modes.CBC(iv))
+    encryptor = cipher.encryptor()
+    ct_bytes = encryptor.update(padded_data) + encryptor.finalize()
+    return iv + ct_bytes
 
 def decrypt(data: bytes) -> bytes:
     iv = data[:16]
     ct = data[16:]
-    cipher = AES.new(KEY, AES.MODE_CBC, iv)
-    return unpad(cipher.decrypt(ct), AES.block_size)
+    cipher = Cipher(algorithms.AES(KEY), modes.CBC(iv))
+    decryptor = cipher.decryptor()
+    padded_data = decryptor.update(ct) + decryptor.finalize()
+    unpadder = padding.PKCS7(128).unpadder()
+    return unpadder.update(padded_data) + unpadder.finalize()
