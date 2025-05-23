@@ -40,9 +40,41 @@ class Tunnel:
     def handle_client(self, client_socket: socket.socket):
         """Handle a new client connection"""
         try:
-            # Create connection to remote server
+            # First, receive the destination info from the SOCKS proxy
+            # Read first byte to determine address type
+            address_type = struct.unpack('!B', client_socket.recv(1))[0]
+            
+            if address_type == 1:  # IPv4
+                # IPv4: <type><ignored><ipv4>
+                _, ipv4_int = struct.unpack('!BI', client_socket.recv(5))
+                address = socket.inet_ntoa(struct.pack('!I', ipv4_int))
+            elif address_type == 3:  # Domain name
+                # Domain: <type><length><domain>
+                length = struct.unpack('!B', client_socket.recv(1))[0]
+                address = client_socket.recv(length + 1)[1:].decode()  # +1 for ignored byte, then skip it
+            else:
+                logging.error(f"Unsupported address type: {address_type}")
+                client_socket.close()
+                return
+                
+            # Read port
+            port = struct.unpack('!H', client_socket.recv(2))[0]
+            
+            logging.info(f"Tunnel request to {address}:{port}")
+            
+            # Create connection to remote server via the VPN server
+            # For this micro-VPN, we're connecting directly rather than forwarding through
+            # the VPN socket since this is a simplified implementation
             server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             server_socket.connect((self.remote_host, self.remote_port))
+            
+            # Send a request to the VPN server with destination info
+            request = {
+                "action": "connect",
+                "remote_host": address,
+                "remote_port": port
+            }
+            server_socket.sendall((json.dumps(request) + "\n").encode())
             
             with self.lock:
                 self.tunnels[client_socket] = server_socket
@@ -53,7 +85,7 @@ class Tunnel:
             threading.Thread(target=self.forward, args=(server_socket, client_socket)).start()
 
         except Exception as e:
-            logging.error(f"Error handling client: {e}")
+            logging.error(f"Error handling client in tunnel: {e}")
             self.cleanup_socket(client_socket)
 
     def forward(self, source: socket.socket, destination: socket.socket):
@@ -104,10 +136,11 @@ class SOCKSProxy:
     """SOCKS5 proxy implementation to hide client IP"""
     SOCKS_VERSION = 5
     
-    def __init__(self, host='127.0.0.1', port=1080):
+    def __init__(self, host='127.0.0.1', port=1080, tunnel=None):
         self.host = host
         self.port = port
         self.running = False
+        self.tunnel = tunnel  # Reference to the tunnel for forwarding
         
     def handle_client(self, client):
         """Handle SOCKS5 client connection"""
@@ -137,9 +170,25 @@ class SOCKSProxy:
         port = struct.unpack('!H', client.recv(2))[0]
         
         try:
-            # Connect to destination
-            remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            remote.connect((address, port))
+            if self.tunnel:
+                # Connect through the tunnel instead of directly
+                remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                remote.connect(('127.0.0.1', self.tunnel.local_port))
+                
+                # Send destination info to the tunnel
+                # Format: <address_type><address_len><address><port>
+                if address_type == 1:  # IPv4
+                    header = struct.pack('!BBI', 1, 0, struct.unpack('!I', socket.inet_aton(address))[0])
+                else:  # Domain name
+                    header = struct.pack('!BBB', 3, len(address), 0) + address.encode()
+                
+                header += struct.pack('!H', port)
+                remote.sendall(header)
+            else:
+                # Direct connection if no tunnel (for testing)
+                remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                remote.connect((address, port))
+                
             bind_address = remote.getsockname()
             
             # Send success response
@@ -237,7 +286,7 @@ class ClientTunnel(Tunnel):
         self.vpn_socket = vpn_socket
         
         # Start SOCKS proxy on localhost
-        self.proxy = SOCKSProxy(host='127.0.0.1', port=1080)
+        self.proxy = SOCKSProxy(host='127.0.0.1', port=1080, tunnel=self)
         proxy_thread = threading.Thread(target=self.proxy.start)
         proxy_thread.daemon = True
         proxy_thread.start()
@@ -386,20 +435,56 @@ class ClientTunnel(Tunnel):
 class ServerTunnel(Tunnel):
     def __init__(self, local_port: int):
         super().__init__(local_port, "0.0.0.0", 0)  # Server listens on all interfaces
+        self.client_tunnels = {}  # Keep track of client tunnels
+
+    def handle_client(self, client_socket: socket.socket):
+        """Handle incoming connection from VPN client"""
+        try:
+            # Read VPN client commands as JSON
+            buffer = ""
+            while True:
+                data = client_socket.recv(1024).decode()
+                if not data:
+                    break
+                buffer += data
+                if '\n' in buffer:
+                    line, buffer = buffer.split('\n', 1)
+                    request = json.loads(line)
+                    response = self.handle_tunnel_request(client_socket, request)
+                    client_socket.sendall((json.dumps(response) + "\n").encode())
+        except Exception as e:
+            logging.error(f"Error handling VPN client: {e}")
+            client_socket.close()
 
     def handle_tunnel_request(self, vpn_socket: socket.socket, request: dict):
         """Handle tunnel request from VPN client"""
         try:
             action = request.get("action")
             if action == "connect":
-                # Create new tunnel for the client
-                client_tunnel = Tunnel(
-                    local_port=0,  # Let OS choose port
-                    remote_host=request.get("remote_host", "127.0.0.1"),
-                    remote_port=request.get("remote_port", 80)
-                )
-                client_tunnel.start()
-                return {"status": "success", "message": "Tunnel established"}
+                # Extract destination info
+                remote_host = request.get("remote_host", "127.0.0.1")
+                remote_port = request.get("remote_port", 80)
+                
+                logging.info(f"Creating tunnel to {remote_host}:{remote_port}")
+                
+                try:
+                    # Connect to the requested destination
+                    dest_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    dest_socket.connect((remote_host, remote_port))
+                    
+                    # Set up forwarding between VPN client and destination
+                    with self.lock:
+                        self.tunnels[vpn_socket] = dest_socket
+                        self.tunnels[dest_socket] = vpn_socket
+                        
+                    # Start bidirectional forwarding
+                    threading.Thread(target=self.forward, args=(vpn_socket, dest_socket)).start()
+                    threading.Thread(target=self.forward, args=(dest_socket, vpn_socket)).start()
+                    
+                    return {"status": "success", "message": f"Connected to {remote_host}:{remote_port}"}
+                except Exception as e:
+                    logging.error(f"Failed to connect to {remote_host}:{remote_port}: {e}")
+                    return {"status": "error", "message": f"Connection failed: {str(e)}"}
             else:
                 return {"status": "error", "message": "Unknown tunnel action"}
         except Exception as e:
