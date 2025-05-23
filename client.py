@@ -42,8 +42,7 @@ class VPNClient:
             self.username = username
             logging.info("[+] Authentication successful")
             
-            # Initialize tunnel
-            self.tunnel = ClientTunnel(1080, HOST, PORT)  # SOCKS proxy port
+            self.tunnel = ClientTunnel(1080, HOST, PORT) 
             self.tunnel.connect_vpn(self.socket)
             logging.info("[+] VPN tunnel established on port 1080")
             return True
