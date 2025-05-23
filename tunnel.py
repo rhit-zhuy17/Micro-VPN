@@ -93,33 +93,65 @@ class Tunnel:
         try:
             while self.running:
                 try:
+                    # Use select to check if socket is readable
+                    readable, _, _ = select.select([source], [], [], 1.0)
+                    if not readable:
+                        continue
+                        
                     data = source.recv(4096)
                     if not data:
                         break
-                    destination.send(data)
+                        
+                    # Check if destination is still valid
+                    try:
+                        destination.send(data)
+                    except (socket.error, OSError) as e:
+                        if self.running:
+                            logging.error(f"Error sending data: {e}")
+                        break
+                        
+                except (socket.error, OSError) as e:
+                    if self.running:
+                        logging.error(f"Error receiving data: {e}")
+                    break
                 except Exception as e:
                     if self.running:
-                        logging.error(f"Error forwarding data: {e}")
+                        logging.error(f"Unexpected error in forward: {e}")
                     break
         finally:
             self.cleanup_socket(source)
+            self.cleanup_socket(destination)
 
     def cleanup_socket(self, sock: socket.socket):
         """Clean up a socket and its pair"""
+        if sock is None:
+            return
+            
         with self.lock:
-            if sock in self.tunnels:
-                pair = self.tunnels[sock]
-                del self.tunnels[sock]
-                if pair in self.tunnels:
-                    del self.tunnels[pair]
+            try:
+                if sock in self.tunnels:
+                    pair = self.tunnels[sock]
+                    del self.tunnels[sock]
+                    if pair in self.tunnels:
+                        del self.tunnels[pair]
+                    try:
+                        pair.shutdown(socket.SHUT_RDWR)
+                    except:
+                        pass
+                    try:
+                        pair.close()
+                    except:
+                        pass
                 try:
-                    pair.close()
+                    sock.shutdown(socket.SHUT_RDWR)
                 except:
                     pass
-            try:
-                sock.close()
-            except:
-                pass
+                try:
+                    sock.close()
+                except:
+                    pass
+            except Exception as e:
+                logging.error(f"Error during socket cleanup: {e}")
 
     def stop(self):
         """Stop the tunnel server"""
