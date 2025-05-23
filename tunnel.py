@@ -176,68 +176,78 @@ class SOCKSProxy:
         
     def handle_client(self, client):
         """Handle SOCKS5 client connection"""
-        # SOCKS5 initialization
-        version, nmethods = struct.unpack("!BB", client.recv(2))
-        methods = client.recv(nmethods)
-        
-        # We only support no authentication (0x00)
-        client.sendall(struct.pack("!BB", self.SOCKS_VERSION, 0))
-        
-        # SOCKS5 connection request
-        version, cmd, _, address_type = struct.unpack("!BBBB", client.recv(4))
-        
-        if cmd != 1:  # Only support CONNECT command
-            client.close()
-            return
-            
-        if address_type == 1:  # IPv4
-            address = socket.inet_ntoa(client.recv(4))
-        elif address_type == 3:  # Domain name
-            domain_length = client.recv(1)[0]
-            address = client.recv(domain_length).decode()
-        else:  # Not supported
-            client.close()
-            return
-            
-        port = struct.unpack('!H', client.recv(2))[0]
-        
         try:
-            if self.tunnel:
-                # Connect through the tunnel instead of directly
-                remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                remote.connect(('127.0.0.1', self.tunnel.local_port))
-                
-                # Send destination info to the tunnel
-                # Format: <address_type><address_len><address><port>
-                if address_type == 1:  # IPv4
-                    header = struct.pack('!BBI', 1, 0, struct.unpack('!I', socket.inet_aton(address))[0])
-                else:  # Domain name
-                    header = struct.pack('!BBB', 3, len(address), 0) + address.encode()
-                
-                header += struct.pack('!H', port)
-                remote.sendall(header)
-            else:
-                # Direct connection if no tunnel (for testing)
-                remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                remote.connect((address, port))
-                
-            bind_address = remote.getsockname()
+            # SOCKS5 initialization
+            version, nmethods = struct.unpack("!BB", client.recv(2))
+            methods = client.recv(nmethods)
             
-            # Send success response
-            addr = struct.unpack("!I", socket.inet_aton(bind_address[0]))[0]
-            port = bind_address[1]
-            reply = struct.pack("!BBBBIH", self.SOCKS_VERSION, 0, 0, 1, addr, port)
-            client.sendall(reply)
+            # We only support no authentication (0x00)
+            client.sendall(struct.pack("!BB", self.SOCKS_VERSION, 0))
             
-            # Set up forwarding
-            self.forward_data(client, remote)
+            # SOCKS5 connection request
+            version, cmd, _, address_type = struct.unpack("!BBBB", client.recv(4))
             
+            if cmd != 1:  # Only support CONNECT command
+                client.close()
+                return
+                
+            if address_type == 1:  # IPv4
+                address = socket.inet_ntoa(client.recv(4))
+            elif address_type == 3:  # Domain name
+                domain_length = client.recv(1)[0]
+                address = client.recv(domain_length).decode()
+            else:  # Not supported
+                client.close()
+                return
+                
+            port = struct.unpack('!H', client.recv(2))[0]
+            
+            try:
+                if self.tunnel:
+                    # Connect through the tunnel instead of directly
+                    remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    remote.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    remote.connect(('127.0.0.1', self.tunnel.local_port))
+                    
+                    # Send destination info to the tunnel
+                    # Format: <address_type><address_len><address><port>
+                    if address_type == 1:  # IPv4
+                        header = struct.pack('!BBI', 1, 0, struct.unpack('!I', socket.inet_aton(address))[0])
+                    else:  # Domain name
+                        header = struct.pack('!BBB', 3, len(address), 0) + address.encode()
+                    
+                    header += struct.pack('!H', port)
+                    remote.sendall(header)
+                else:
+                    # Direct connection if no tunnel (for testing)
+                    remote = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    remote.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    remote.connect((address, port))
+                    
+                bind_address = remote.getsockname()
+                
+                # Send success response
+                addr = struct.unpack("!I", socket.inet_aton(bind_address[0]))[0]
+                port = bind_address[1]
+                reply = struct.pack("!BBBBIH", self.SOCKS_VERSION, 0, 0, 1, addr, port)
+                client.sendall(reply)
+                
+                # Set up forwarding with proper buffering
+                self.forward_data(client, remote)
+                
+            except Exception as e:
+                logging.error(f"SOCKS error: {e}")
+                # Send failure response
+                reply = struct.pack("!BBBBIH", self.SOCKS_VERSION, 5, 0, 1, 0, 0)
+                client.sendall(reply)
+                client.close()
+                
         except Exception as e:
-            logging.error(f"SOCKS error: {e}")
-            # Send failure response
-            reply = struct.pack("!BBBBIH", self.SOCKS_VERSION, 5, 0, 1, 0, 0)
-            client.sendall(reply)
-            client.close()
+            logging.error(f"Error in SOCKS client handler: {e}")
+            try:
+                client.close()
+            except:
+                pass
             
     def forward_data(self, client, remote):
         """Forward data between client and remote"""
@@ -262,13 +272,36 @@ class SOCKSProxy:
         
     def _forward_data_thread(self, source, destination):
         """Thread for forwarding data"""
+        buffer = b''
         while self.running:
             try:
+                # Use select to check if socket is readable
+                readable, _, _ = select.select([source], [], [], 1.0)
+                if not readable:
+                    continue
+                    
                 data = source.recv(4096)
                 if not data:
                     break
-                destination.sendall(data)
-            except:
+                    
+                # Add data to buffer
+                buffer += data
+                
+                # Try to send as much as possible
+                while buffer:
+                    try:
+                        sent = destination.send(buffer)
+                        buffer = buffer[sent:]
+                    except socket.error as e:
+                        if e.errno in (socket.EAGAIN, socket.EWOULDBLOCK):
+                            # Socket is full, wait a bit
+                            time.sleep(0.1)
+                            continue
+                        raise
+                        
+            except Exception as e:
+                if self.running:
+                    logging.error(f"Error in forward thread: {e}")
                 break
                 
         # Close both sockets when done
@@ -293,6 +326,7 @@ class SOCKSProxy:
         while self.running:
             try:
                 client, addr = server.accept()
+                client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 logging.info(f"New SOCKS client from {addr}")
                 client_thread = threading.Thread(target=self.handle_client, args=(client,))
                 client_thread.daemon = True
