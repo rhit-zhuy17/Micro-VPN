@@ -37,7 +37,7 @@ pip install -r requirements.txt
 ## Configuration
 
 The application uses a `shared_config.py` file for configuration. Make sure to set the following variables:
-- `HOST`: Server host address
+- `HOST`: Server host ip address
 - `PORT`: Server port number
 - `ENCRYPTION_KEY`: Encryption key for secure communication
 
@@ -86,7 +86,7 @@ This single command starts both:
 - The web interface for managing the server
 
 2. Access the web interface:
-   - Open your browser and navigate to `http://localhost:8501`
+   - Open your browser and navigate to `http://localhost:8501` (Might be in other port)
    - The default interface will show the VPN server management dashboard
 
 ### Client Connection
@@ -110,7 +110,7 @@ python client.py
 When you connect to the VPN:
 1. All your internet traffic is encrypted and routed through the VPN server
 2. Your IP address will appear as the server's IP address to external services
-3. Your actual IP address (e.g., your Mac's IP) is hidden from websites and services
+3. Your actual IP address (e.g., your laptop's IP) is hidden from websites and services
 4. The server acts as a middleman, forwarding your traffic while maintaining privacy
 
 For example:
@@ -184,7 +184,7 @@ The application consists of several key components:
    - Verify the encryption key is properly set in `shared_config.py`
    - Check that both server and client have the same key
 
-## Contributing
+<!-- ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
@@ -194,4 +194,4 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Support
 
-For support, please open an issue in the GitHub repository.
+For support, please open an issue in the GitHub repository. -->
